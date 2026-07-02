@@ -86,18 +86,59 @@ export class InternsController {
     const connectionRate = totalCalls > 0 ? Math.round((totalReceived / totalCalls) * 100) : 0;
     const conversionRate = totalCalls > 0 ? Math.round((totalInterested / totalCalls) * 100) : 0;
 
-    // Attendance metrics
-    const attendanceDays = allAttendance.filter((a) => a.status !== "ND");
-    const presentDays = allAttendance.filter(
-      (a) => a.status === "P" || a.status === "CL" || a.status === "AL",
-    );
-    const absentDays = allAttendance.filter(
-      (a) => a.status === "A" || a.status === "UL",
-    );
-    const lateDays = allAttendance.filter((a) => a.status === "L");
-    const attendanceRate = attendanceDays.length > 0
-      ? Math.round((presentDays.length / attendanceDays.length) * 100)
-      : 0;
+    // Attendance metrics — consistent with the monthly grid: a call-log
+    // submission derives a "P", a manual status overrides it, and the rate is
+    // measured over elapsed working days (Sun–Fri + rostered Saturdays) so days
+    // with no submission count as absent instead of inflating the rate to 100%.
+    const effective = new Map<string, string>();
+    for (const l of allCallLogs) effective.set(l.date.toISOString().split("T")[0], "P");
+    for (const a of allAttendance) effective.set(a.date.toISOString().split("T")[0], a.status);
+
+    const roster = await this.prisma.saturdayRoster.findMany({
+      where: { internId: id },
+      select: { date: true },
+    });
+    const rosterSet = new Set(roster.map((r) => r.date.toISOString().split("T")[0]));
+
+    const activity = [
+      ...allCallLogs.map((l) => l.date),
+      ...allAttendance.map((a) => a.date),
+      ...(intern.joinDate ? [intern.joinDate] : []),
+    ];
+
+    let present = 0; // present-ish credit: P/L = 1, HD = 0.5
+    let expected = 0; // elapsed working days
+    let presentDays = 0;
+    let absentDays = 0;
+    let lateDays = 0;
+
+    if (activity.length > 0) {
+      const first = new Date(Math.min(...activity.map((d) => d.getTime())));
+      const startUTC = Date.UTC(first.getUTCFullYear(), first.getUTCMonth(), first.getUTCDate());
+      const today = new Date();
+      const endUTC = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
+      const DAY = 86400000;
+      for (let t = startUTC; t <= endUTC; t += DAY) {
+        const day = new Date(t);
+        const dateStr = day.toISOString().split("T")[0];
+        const status = effective.get(dateStr);
+        if (status === "P") presentDays++;
+        else if (status === "A" || status === "UL") absentDays++;
+        else if (status === "L") lateDays++;
+
+        const dow = day.getUTCDay();
+        const isWorkingDay = dow !== 6 || rosterSet.has(dateStr);
+        if (!isWorkingDay) continue; // weekly holiday, not rostered
+        if (status === "ND") continue; // no duty
+        if (status === "AL" || status === "CL") continue; // approved leave: excused
+        expected++;
+        if (status === "P" || status === "L") present += 1;
+        else if (status === "HD") present += 0.5;
+        // "A", "UL", or no record → absent working day.
+      }
+    }
+
+    const attendanceRate = expected > 0 ? Math.round((present / expected) * 100) : 0;
 
     // Daily call trend (last 14 days of data)
     const dailyTrend = allCallLogs.slice(-14).map((l) => ({
@@ -166,10 +207,10 @@ export class InternsController {
         daysWorked: monthCallLogs.length,
       },
       attendance: {
-        totalDays: attendanceDays.length,
-        present: presentDays.length,
-        absent: absentDays.length,
-        late: lateDays.length,
+        totalDays: expected,
+        present: presentDays,
+        absent: absentDays,
+        late: lateDays,
         rate: attendanceRate,
       },
       ranking: { rank, total: totalActiveInterns },

@@ -10,7 +10,9 @@ function normalizeName(name: string): string {
     .trim()
     .split(/\s+/)
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-    .join(" ");
+    .join(" ")
+    // Keep initials capitalised: "K.c." -> "K.C.", "G.c" -> "G.C".
+    .replace(/\.([a-z])/g, (_, c) => "." + c.toUpperCase());
 }
 
 function nameKey(name: string): string {
@@ -45,11 +47,26 @@ function editDistance(a: string, b: string): number {
   return matrix[b.length][a.length];
 }
 
-function findBestMatch(name: string, cache: Map<string, { id: string; name: string }>): { id: string; name: string } | null {
+type CachedIntern = { id: string; name: string; email: string | null; role: string; team: string };
+
+// Prefer the fuller name when the shorter one is contained in it (same person).
+function betterName(current: string, incoming: string): string {
+  const cur = current.trim();
+  const inc = incoming.trim();
+  if (!inc) return cur;
+  if (inc.split(/\s+/).length > cur.split(/\s+/).length) {
+    const curKey = nameKey(cur);
+    const incKey = nameKey(inc);
+    if (incKey.includes(curKey) || curKey.includes(incKey)) return inc;
+  }
+  return cur;
+}
+
+function findBestMatch(name: string, cache: Map<string, CachedIntern>): CachedIntern | null {
   const key = nameKey(name);
   if (cache.has(key)) return cache.get(key)!;
 
-  let best: { id: string; name: string } | null = null;
+  let best: CachedIntern | null = null;
   let bestScore = 0;
 
   const nameParts = name.toLowerCase().split(/\s+/);
@@ -95,11 +112,13 @@ function toStr(val: any): string | null {
 }
 
 async function main() {
-  // Clear existing data
+  // Clear existing data (children before parents to satisfy FK constraints)
   await prisma.callLog.deleteMany();
   await prisma.tourLog.deleteMany();
   await prisma.attendance.deleteMany();
   await prisma.leaveRequest.deleteMany();
+  await prisma.saturdayRoster.deleteMany();
+  await prisma.importBatch.deleteMany();
   await prisma.intern.deleteMany();
   console.log("Cleared existing data.");
 
@@ -110,9 +129,10 @@ async function main() {
   const wb = XLSX.readFile(filePath);
   console.log("Sheets:", wb.SheetNames);
 
-  const internCache = new Map<string, { id: string; name: string }>();
+  const internCache = new Map<string, CachedIntern>();
   let internCount = 0;
   let logCount = 0;
+  let enrichedCount = 0;
 
   for (const sheetName of wb.SheetNames) {
     if (sheetName !== "Alpha" && sheetName !== "Call Center") continue;
@@ -129,13 +149,14 @@ async function main() {
       const name = normalizeName(rawName);
       const key = nameKey(name);
 
+      const rowEmail = row["Email Address"] ? row["Email Address"].toString().trim() : undefined;
+      const roleStr = row["Role"]?.toString().trim();
+
       let intern = internCache.get(key) || findBestMatch(name, internCache);
 
       if (!intern) {
         internCount++;
         const internId = `INT-${String(internCount).padStart(3, "0")}`;
-        const email = row["Email Address"] ? row["Email Address"].toString().trim() : undefined;
-        const roleStr = row["Role"]?.toString().trim();
         const role = roleStr === "EA" ? "SUPERVISOR" : "INTERN";
         const assignedTeam = roleStr === "EA" ? "EA" : team;
 
@@ -143,17 +164,47 @@ async function main() {
           data: {
             internId,
             name,
-            email: email || undefined,
+            email: rowEmail || undefined,
             role: role as any,
             team: assignedTeam as any,
           },
         });
-        intern = { id: created.id, name: created.name };
+        intern = {
+          id: created.id,
+          name: created.name,
+          email: created.email ?? null,
+          role: created.role,
+          team: created.team,
+        };
         internCache.set(key, intern);
         console.log(`  Created: ${name} (${internId}) [${assignedTeam}]`);
-      } else if (!internCache.has(key)) {
-        internCache.set(key, intern);
-        console.log(`  Matched: "${name}" → "${intern.name}" (fuzzy)`);
+      } else {
+        if (!internCache.has(key)) {
+          internCache.set(key, intern);
+          console.log(`  Matched: "${name}" → "${intern.name}" (fuzzy)`);
+        }
+        // Backfill / upgrade the existing intern from richer data on this row.
+        const data: Record<string, any> = {};
+        if (rowEmail && !intern.email) {
+          data.email = rowEmail;
+          intern.email = rowEmail;
+        }
+        const better = betterName(intern.name, name);
+        if (better !== intern.name) {
+          data.name = better;
+          intern.name = better;
+        }
+        if (roleStr === "EA" && intern.role !== "SUPERVISOR") {
+          data.role = "SUPERVISOR";
+          data.team = "EA";
+          intern.role = "SUPERVISOR";
+          intern.team = "EA";
+        }
+        if (Object.keys(data).length > 0) {
+          await prisma.intern.update({ where: { id: intern.id }, data });
+          enrichedCount++;
+          console.log(`  Updated: "${intern.name}" ${JSON.stringify(data)}`);
+        }
       }
 
       const timestamp = row["Timestamp"];
@@ -281,7 +332,7 @@ async function main() {
     }
   }
 
-  console.log(`\nDone! Created ${internCount} interns and ${logCount} call logs.`);
+  console.log(`\nDone! Created ${internCount} interns, enriched ${enrichedCount}, and ${logCount} call logs.`);
   console.log(`Intern breakdown:`);
   const teams = await prisma.intern.groupBy({ by: ["team"], _count: true });
   teams.forEach((t) => console.log(`  ${t.team}: ${t._count}`));

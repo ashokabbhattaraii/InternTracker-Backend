@@ -60,6 +60,8 @@ interface InternRef {
   internId: string;
   name: string;
   team: string;
+  email: string | null;
+  role: string;
 }
 
 // One row as returned by the review step and echoed back (possibly edited) on commit.
@@ -282,6 +284,8 @@ export class ImportController {
             intern = await this.createIntern(parsed);
             internCache.set(this.nameKey(parsed.name), intern);
             result.newInterns++;
+          } else {
+            await this.enrichIntern(intern, parsed);
           }
 
           const cls = this.classify(intern.id, parsed, existingByKey);
@@ -456,6 +460,8 @@ export class ImportController {
 
     const internCache = await this.loadInternCache();
     const existingByKey = await this.loadExistingLogs();
+    const internById = new Map<string, InternRef>();
+    for (const ref of internCache.values()) internById.set(ref.id, ref);
 
     const result = {
       created: 0,
@@ -481,11 +487,13 @@ export class ImportController {
 
         // Resolve / create the intern.
         let internId = row.internId;
+        let internRef: InternRef | undefined;
         if (!internId) {
           const key = this.nameKey(row.name);
           const cached = internCache.get(key);
           if (cached) {
             internId = cached.id;
+            internRef = cached;
           } else {
             const created = await this.createIntern({
               name: row.name,
@@ -494,9 +502,23 @@ export class ImportController {
               email: row.email,
             });
             internCache.set(key, created);
+            internById.set(created.id, created);
             internId = created.id;
+            internRef = created;
             result.newInterns++;
           }
+        } else {
+          internRef = internById.get(internId);
+        }
+
+        // Keep the interns list current with any richer data on this row.
+        if (internRef) {
+          await this.enrichIntern(internRef, {
+            name: row.name,
+            team: row.team,
+            role: row.role,
+            email: row.email,
+          });
         }
 
         const cls = this.classify(internId, { submittedAt, fields }, existingByKey);
@@ -622,9 +644,17 @@ export class ImportController {
   private async loadInternCache() {
     const cache = new Map<string, InternRef>();
     const existing = await this.prisma.intern.findMany({
-      select: { id: true, internId: true, name: true, team: true },
+      select: { id: true, internId: true, name: true, team: true, email: true, role: true },
     });
-    for (const i of existing) cache.set(this.nameKey(i.name), { ...i, team: i.team });
+    for (const i of existing)
+      cache.set(this.nameKey(i.name), {
+        id: i.id,
+        internId: i.internId,
+        name: i.name,
+        team: i.team,
+        email: i.email ?? null,
+        role: i.role,
+      });
     return cache;
   }
 
@@ -656,7 +686,65 @@ export class ImportController {
         team: teamEnum as any,
       },
     });
-    return { id: created.id, internId: created.internId, name: created.name, team: created.team };
+    return {
+      id: created.id,
+      internId: created.internId,
+      name: created.name,
+      team: created.team,
+      email: created.email ?? null,
+      role: created.role,
+    };
+  }
+
+  // When a row resolves to an intern we already have, backfill / upgrade the
+  // stored profile from the richer data on this row: a missing email, a more
+  // complete name (e.g. "Unnur" -> "Unnur Pradhan"), or an EA promotion. The
+  // Alpha sheet carries no email/role, so people who also appear on the Call
+  // Center sheet would otherwise stay half-populated in the interns list.
+  private async enrichIntern(
+    intern: InternRef,
+    incoming: { name: string; team: string; role?: string; email?: string },
+  ): Promise<void> {
+    const data: Record<string, any> = {};
+
+    const email = incoming.email?.trim();
+    if (email && !intern.email) {
+      data.email = email;
+      intern.email = email;
+    }
+
+    const better = this.betterName(intern.name, incoming.name);
+    if (better !== intern.name) {
+      data.name = better;
+      intern.name = better;
+    }
+
+    if (incoming.role === "EA" && intern.role !== "SUPERVISOR") {
+      data.role = "SUPERVISOR";
+      data.team = "EA";
+      intern.role = "SUPERVISOR";
+      intern.team = "EA";
+    }
+
+    if (Object.keys(data).length > 0) {
+      await this.prisma.intern.update({ where: { id: intern.id }, data });
+    }
+  }
+
+  // Prefer the fuller name when the shorter one is contained in it (same person,
+  // more complete spelling); otherwise keep what we already have.
+  private betterName(current: string, incoming: string): string {
+    const cur = current.trim();
+    const inc = incoming.trim();
+    if (!inc) return cur;
+    const curTokens = cur.split(/\s+/);
+    const incTokens = inc.split(/\s+/);
+    if (incTokens.length > curTokens.length) {
+      const curKey = this.nameKey(cur);
+      const incKey = this.nameKey(inc);
+      if (incKey.includes(curKey) || curKey.includes(incKey)) return inc;
+    }
+    return cur;
   }
 
   private resolveIntern(name: string, cache: Map<string, InternRef>) {
@@ -880,7 +968,9 @@ export class ImportController {
       .trim()
       .split(/\s+/)
       .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-      .join(" ");
+      .join(" ")
+      // Keep initials capitalised: "K.c." -> "K.C.", "G.c" -> "G.C".
+      .replace(/\.([a-z])/g, (_, c) => "." + c.toUpperCase());
   }
 
   private nameKey(name: string): string {

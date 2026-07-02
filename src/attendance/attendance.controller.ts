@@ -35,7 +35,7 @@ export class AttendanceController {
       orderBy: { internId: "asc" },
     });
 
-    const [manual, callLogs, comp] = await Promise.all([
+    const [manual, callLogs, rosters, comp, callFirst, attFirst] = await Promise.all([
       this.prisma.attendance.findMany({
         where: { date: { gte: startDate, lte: endDate } },
         select: { internId: true, date: true, status: true },
@@ -44,31 +44,79 @@ export class AttendanceController {
         where: { date: { gte: startDate, lte: endDate } },
         select: { internId: true, date: true },
       }),
+      this.prisma.saturdayRoster.findMany({
+        where: { date: { gte: startDate, lte: endDate } },
+        select: { internId: true, date: true },
+      }),
       this.computeCompLeave(),
+      // Earliest activity per intern (all time) — used so we never count working
+      // days before an intern actually started reporting as absences.
+      this.prisma.callLog.groupBy({ by: ["internId"], _min: { date: true } }),
+      this.prisma.attendance.groupBy({ by: ["internId"], _min: { date: true } }),
     ]);
 
     const manualMap = new Map<string, string>();
     for (const r of manual) manualMap.set(this.key(r.internId, r.date), r.status);
     const logSet = new Set<string>();
     for (const l of callLogs) logSet.add(this.key(l.internId, l.date));
+    const rosterSet = new Set<string>();
+    for (const r of rosters) rosterSet.add(this.key(r.internId, r.date));
+
+    // First day each intern counts toward the rate: earliest of join date / first
+    // call log / first manual attendance (as a yyyy-mm-dd string).
+    const startByIntern = new Map<string, string>();
+    const noteStart = (internId: string, date: Date | null) => {
+      if (!date) return;
+      const s = date.toISOString().split("T")[0];
+      const cur = startByIntern.get(internId);
+      if (!cur || s < cur) startByIntern.set(internId, s);
+    };
+    for (const c of callFirst) noteStart(c.internId, c._min.date ?? null);
+    for (const a of attFirst) noteStart(a.internId, a._min.date ?? null);
+    for (const i of interns) noteStart(i.id, i.joinDate ?? null);
+
+    // The attendance rate is measured over working days that have actually
+    // elapsed — never penalise interns for days still in the future. Saturday
+    // (UTC weekday 6) is the weekly holiday, so it is a working day only for an
+    // intern rostered for that specific Saturday.
+    const todayStr = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+    )
+      .toISOString()
+      .split("T")[0];
 
     const grid = interns.map((intern) => {
       const days: Record<string, string> = {};
-      const counts = { P: 0, A: 0, L: 0, leave: 0, marked: 0, presentish: 0 };
+      const counts = { P: 0, A: 0, L: 0, leave: 0 };
+      let present = 0; // present-ish credit: P/L = 1, HD = 0.5
+      let expected = 0; // elapsed working days that count toward the rate
+      const startStr = startByIntern.get(intern.id);
 
       for (let d = 1; d <= endDate.getUTCDate(); d++) {
         const dateStr = this.ds(y, m, d);
         const k = `${intern.id}|${dateStr}`;
         const status = manualMap.get(k) ?? (logSet.has(k) ? "P" : undefined);
-        if (!status) continue;
-        days[dateStr] = status;
-        if (status === "ND") continue;
-        counts.marked++;
-        if (status === "P") counts.P++;
-        if (status === "A") counts.A++;
-        if (status === "L") counts.L++;
-        if (LEAVE_STATUSES.has(status)) counts.leave++;
-        if (status === "P" || status === "CL" || status === "AL") counts.presentish++;
+        if (status) {
+          days[dateStr] = status;
+          if (status === "P") counts.P++;
+          else if (status === "A") counts.A++;
+          else if (status === "L") counts.L++;
+          if (LEAVE_STATUSES.has(status)) counts.leave++;
+        }
+
+        // --- Attendance-rate accounting (denominator = elapsed working days) ---
+        if (dateStr > todayStr) continue; // future day — ignore entirely
+        if (!startStr || dateStr < startStr) continue; // before this intern started
+        const dow = new Date(`${dateStr}T00:00:00Z`).getUTCDay();
+        const isWorkingDay = dow !== 6 || rosterSet.has(k);
+        if (!isWorkingDay) continue; // weekly holiday, not rostered
+        if (status === "ND") continue; // explicitly no duty
+        if (status === "AL" || status === "CL") continue; // approved leave: excused
+
+        expected++;
+        if (status === "P" || status === "L") present += 1;
+        else if (status === "HD") present += 0.5;
+        // "A", "UL", or no record at all → an absent working day (present += 0).
       }
 
       const cl =
@@ -83,8 +131,7 @@ export class AttendanceController {
         absent: counts.A,
         late: counts.L,
         leave: counts.leave,
-        attendanceRate:
-          counts.marked > 0 ? Math.round((counts.presentish / counts.marked) * 100) : 0,
+        attendanceRate: expected > 0 ? Math.round((present / expected) * 100) : 0,
         clEarned: cl.earned,
         clUsed: cl.used,
         clBalance: cl.balance,
