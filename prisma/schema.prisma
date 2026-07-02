@@ -1,0 +1,200 @@
+generator client {
+  provider      = "prisma-client-js"
+  // "native" for local dev; "rhel-openssl-3.0.x" for the Vercel Function runtime.
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
+}
+
+datasource db {
+  provider  = "postgresql"
+  // Runtime queries go through the Supabase transaction pooler (pgbouncer).
+  url       = env("DATABASE_URL")
+  // Migrations / introspection need a direct (session) connection.
+  directUrl = env("DIRECT_URL")
+}
+
+model Intern {
+  id           String   @id @default(cuid())
+  internId     String   @unique
+  name         String
+  email        String?
+  phone        String?
+  role         Role     @default(INTERN)
+  team         Team     @default(CALL_CENTER)
+  shift        String   @default("9:00 AM - 5:00 PM")
+  joinDate     DateTime?
+  supervisor   String?
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  attendance    Attendance[]
+  callLogs      CallLog[]
+  tourLogs      TourLog[]
+  leaveRequests LeaveRequest[]
+  saturdayDuty  SaturdayRoster[]
+}
+
+model Attendance {
+  id        String           @id @default(cuid())
+  internId  String
+  date      DateTime         @db.Date
+  status    AttendanceStatus
+  checkIn   DateTime?
+  checkOut  DateTime?
+  notes     String?
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  intern    Intern           @relation(fields: [internId], references: [id])
+
+  @@unique([internId, date])
+}
+
+model CallLog {
+  id                    String   @id @default(cuid())
+  internId              String
+  date                  DateTime @db.Date
+  submittedAt           DateTime
+  source                String   @default("UNKNOWN")
+  callType              String?
+  callsMade             Int      @default(0)
+  callsReceived         Int      @default(0)
+  interestedVisit       Int      @default(0)
+  interestedVisitNames  String?
+  needsFollowUp         Int      @default(0)
+  followUpNames         String?
+  prospects             Int      @default(0)
+  admittedOther         Int      @default(0)
+  afterResults          Int      @default(0)
+  parentDiscussion      Int      @default(0)
+  financialIssues       Int      @default(0)
+  scholarshipHesitation Int      @default(0)
+  courseNotAvailable     Int      @default(0)
+  notInterested         Int      @default(0)
+  invalidNumbers        Int      @default(0)
+  alreadyVisited        Int      @default(0)
+  highlyInterested      Int      @default(0)
+  highlyInterestedNames String?
+  remarks               String?
+  toursMade             Int      @default(0)
+  hoursWorked           Float    @default(0)
+  createdAt             DateTime @default(now())
+
+  intern    Intern   @relation(fields: [internId], references: [id])
+
+  @@unique([internId, submittedAt])
+  @@index([internId, date])
+}
+
+model TourLog {
+  id          String      @id @default(cuid())
+  internId    String
+  date        DateTime    @db.Date
+  visitorName String
+  visitors    Int         @default(1)
+  outcome     TourOutcome
+  notes       String?
+  createdAt   DateTime    @default(now())
+
+  intern      Intern      @relation(fields: [internId], references: [id])
+
+  @@index([internId, date])
+}
+
+model LeaveRequest {
+  id        String      @id @default(cuid())
+  internId  String
+  date      DateTime    @db.Date
+  type      LeaveType
+  reason    String?
+  status    LeaveStatus @default(PENDING)
+  appliedOn DateTime    @default(now())
+  decidedOn DateTime?
+  decidedBy String?
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  intern    Intern      @relation(fields: [internId], references: [id])
+
+  @@index([internId])
+}
+
+model ImportBatch {
+  id             String    @id @default(cuid())
+  fileName       String
+  fileSize       Int       @default(0)
+  importedAt     DateTime  @default(now())
+  createdCount   Int       @default(0)
+  updatedCount   Int       @default(0)
+  skippedCount   Int       @default(0)
+  newInternCount Int       @default(0)
+  dateFrom       DateTime? @db.Date
+  dateTo         DateTime? @db.Date
+  sheets         String?
+
+  @@index([importedAt])
+}
+
+model SaturdayRoster {
+  id        String   @id @default(cuid())
+  internId  String
+  date      DateTime @db.Date
+  createdAt DateTime @default(now())
+
+  intern    Intern   @relation(fields: [internId], references: [id])
+
+  @@unique([internId, date])
+  @@index([date])
+}
+
+model KpiTarget {
+  id                String   @id @default(cuid())
+  minCallsPerDay    Int      @default(15)
+  minVisitsPerWeek  Int      @default(10)
+  minToursPerMonth  Int      @default(5)
+  minAttendanceRate Int      @default(85)
+  lateThresholdMin  Int      @default(15)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+enum Role {
+  INTERN
+  SUPERVISOR
+  ADMIN
+}
+
+enum Team {
+  ALPHA
+  CALL_CENTER
+  EA
+}
+
+enum AttendanceStatus {
+  P
+  A
+  L
+  HD
+  AL
+  UL
+  CL
+  ND
+}
+
+enum TourOutcome {
+  INTERESTED
+  NOT_INTERESTED
+  ENROLLED
+}
+
+enum LeaveType {
+  AL
+  HD
+  CL
+}
+
+enum LeaveStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
