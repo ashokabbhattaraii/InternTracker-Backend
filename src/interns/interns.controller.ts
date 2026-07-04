@@ -1,6 +1,7 @@
 import { Controller, Get, Post, Put, Delete, Body, Param, Query } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { computeCompLeave, CompLeave, EMPTY_COMP_LEAVE } from "../attendance/comp-leave.util";
+import { adToBS, formatNepaliDate, BS_MONTHS, getCurrentNepaliDate, ATTENDANCE_START_AD } from "../utils/nepali-date";
 
 const LEAVE_STATUSES = new Set(["AL", "HD", "CL", "UL"]);
 const ABSENT_STATUSES = new Set(["A", "UL"]);
@@ -351,21 +352,30 @@ export class InternsController {
     const monthAttendanceRate =
       monthExpected > 0 ? Math.round((monthPresent / monthExpected) * 100) : 0;
 
-    // Daily call trend (last 14 days of data)
-    const dailyTrend = allCallLogs.slice(-14).map((l) => ({
-      date: l.date.toISOString().split("T")[0],
-      callsMade: l.callsMade,
-      callsReceived: l.callsReceived,
-      interested: l.interestedVisit,
-      tours: l.toursMade,
-    }));
+    // Daily call trend (last 14 days of data) — includes Nepali date
+    const dailyTrend = allCallLogs.slice(-14).map((l) => {
+      const bs = adToBS(l.date);
+      return {
+        date: l.date.toISOString().split("T")[0],
+        nepaliDate: formatNepaliDate(bs),
+        nepaliDay: `${bs.day} ${BS_MONTHS[bs.month - 1]}`,
+        callsMade: l.callsMade,
+        callsReceived: l.callsReceived,
+        interested: l.interestedVisit,
+        tours: l.toursMade,
+      };
+    });
 
-    // Weekly aggregation
+    // Weekly aggregation — grouped by Nepali week (Sun–Sat)
     const weeklyMap = new Map();
     allCallLogs.forEach((l) => {
       const weekStart = getWeekStart(l.date);
       const key = weekStart.toISOString().split("T")[0];
-      const existing = weeklyMap.get(key) || { calls: 0, received: 0, interested: 0, tours: 0, days: 0 };
+      const bs = adToBS(weekStart);
+      const weekEnd = new Date(weekStart.getTime() + 6 * 86400000);
+      const bsEnd = adToBS(weekEnd);
+      const nepaliLabel = `${bs.day} ${BS_MONTHS[bs.month - 1]} – ${bsEnd.day} ${BS_MONTHS[bsEnd.month - 1]}`;
+      const existing = weeklyMap.get(key) || { calls: 0, received: 0, interested: 0, tours: 0, days: 0, nepaliLabel };
       existing.calls += l.callsMade;
       existing.received += l.callsReceived;
       existing.interested += l.interestedVisit;
@@ -411,10 +421,20 @@ export class InternsController {
       targets,
     });
 
+    const currentNepali = getCurrentNepaliDate();
+    const nepaliMonth = `${BS_MONTHS[currentNepali.month - 1]} ${currentNepali.year}`;
+
     return {
       category,
       reasons,
       flags,
+      nepaliDate: {
+        today: formatNepaliDate(currentNepali),
+        todayFull: `${currentNepali.day} ${BS_MONTHS[currentNepali.month - 1]} ${currentNepali.year}`,
+        currentMonth: nepaliMonth,
+        attendanceStartBS: "1 Asadh 2082",
+        attendanceStartAD: ATTENDANCE_START_AD.toISOString().split("T")[0],
+      },
       compLeave: {
         earned: cl.earned,
         used: cl.used,
@@ -452,6 +472,7 @@ export class InternsController {
         tours: monthToursMade,
         hours: Math.round(monthHours),
         daysWorked: monthCallLogs.length,
+        nepaliMonth,
       },
       attendance: {
         totalDays: expected,

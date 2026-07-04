@@ -7,6 +7,7 @@ import { TourLogsModule } from "./tour-logs/tour-logs.module";
 import { LeavesModule } from "./leaves/leaves.module";
 import { DashboardModule } from "./dashboard/dashboard.module";
 import { ImportModule } from "./import/import.module";
+import { PerformanceModule } from "./performance/performance.module";
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { ImportModule } from "./import/import.module";
     LeavesModule,
     DashboardModule,
     ImportModule,
+    PerformanceModule,
   ],
 })
 export class AppModule {}
