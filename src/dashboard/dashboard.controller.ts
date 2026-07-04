@@ -12,20 +12,45 @@ export class DashboardController {
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
     const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
 
-    const totalInterns = await this.prisma.intern.count({
-      where: { active: true },
-    });
-
-    const teamCounts = await this.prisma.intern.groupBy({
-      by: ["team"],
-      where: { active: true },
-      _count: true,
-    });
-
-    const todayAttendance = await this.prisma.attendance.findMany({
-      where: { date: today },
-      include: { intern: { select: { name: true, internId: true, team: true } } },
-    });
+    // The DB is remote (~150ms RTT) — run all 7 independent queries in one
+    // parallel batch instead of paying the round trip sequentially.
+    const [
+      totalInterns,
+      teamCounts,
+      todayAttendance,
+      todayCalls,
+      pendingLeaves,
+      allInterns,
+      monthCallLogs,
+    ] = await Promise.all([
+      this.prisma.intern.count({ where: { active: true } }),
+      this.prisma.intern.groupBy({
+        by: ["team"],
+        where: { active: true },
+        _count: true,
+      }),
+      this.prisma.attendance.findMany({
+        where: { date: today },
+        include: { intern: { select: { name: true, internId: true, team: true } } },
+      }),
+      this.prisma.callLog.findMany({
+        where: { date: today },
+        include: { intern: { select: { name: true, internId: true, team: true } } },
+      }),
+      this.prisma.leaveRequest.findMany({
+        where: { status: "PENDING" },
+        include: { intern: { select: { id: true, internId: true, name: true } } },
+        orderBy: { appliedOn: "desc" },
+      }),
+      this.prisma.intern.findMany({
+        where: { active: true },
+        select: { id: true, name: true, internId: true, team: true },
+      }),
+      this.prisma.callLog.findMany({
+        where: { date: { gte: monthStart, lte: monthEnd } },
+        include: { intern: { select: { id: true, internId: true, name: true, team: true } } },
+      }),
+    ]);
 
     const present = todayAttendance.filter(
       (a) => a.status === "P" || a.status === "CL" || a.status === "AL",
@@ -35,10 +60,6 @@ export class DashboardController {
     ).length;
     const late = todayAttendance.filter((a) => a.status === "L").length;
 
-    const todayCalls = await this.prisma.callLog.findMany({
-      where: { date: today },
-      include: { intern: { select: { name: true, internId: true, team: true } } },
-    });
     const totalCallsToday = todayCalls.reduce((s, l) => s + l.callsMade, 0);
     const totalToursToday = todayCalls.reduce((s, l) => s + l.toursMade, 0);
 
@@ -49,23 +70,8 @@ export class DashboardController {
       .filter((l) => l.intern.team === "CALL_CENTER" || l.intern.team === "EA")
       .reduce((s, l) => s + l.callsMade, 0);
 
-    const pendingLeaves = await this.prisma.leaveRequest.findMany({
-      where: { status: "PENDING" },
-      include: { intern: { select: { id: true, internId: true, name: true } } },
-      orderBy: { appliedOn: "desc" },
-    });
-
-    const allInterns = await this.prisma.intern.findMany({
-      where: { active: true },
-      select: { id: true, name: true, internId: true, team: true },
-    });
     const checkedInIds = new Set(todayAttendance.map((a) => a.internId));
     const notCheckedIn = allInterns.filter((i) => !checkedInIds.has(i.id));
-
-    const monthCallLogs = await this.prisma.callLog.findMany({
-      where: { date: { gte: monthStart, lte: monthEnd } },
-      include: { intern: { select: { id: true, internId: true, name: true, team: true } } },
-    });
 
     const leaderboard = new Map<string, { name: string; internId: string; team: string; totalCalls: number; totalTours: number; interested: number }>();
     monthCallLogs.forEach((log) => {

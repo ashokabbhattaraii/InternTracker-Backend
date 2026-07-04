@@ -601,6 +601,11 @@ export class ImportController {
     } catch {
       throw new BadRequestException("Could not reach that link.");
     }
+    if (res.status === 401 || res.status === 403) {
+      throw new BadRequestException(
+        'This Google Sheet is private. Open it → Share → General access → "Anyone with the link" (Viewer), then try again.',
+      );
+    }
     if (!res.ok) {
       throw new BadRequestException(
         `Link returned ${res.status}. If it's a Google Sheet, set sharing to "Anyone with the link".`,

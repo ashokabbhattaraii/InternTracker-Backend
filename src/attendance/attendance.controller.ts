@@ -1,17 +1,11 @@
 import { Controller, Get, Post, Query, Body, Param } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
+import { computeCompLeave, CompLeave } from "./comp-leave.util";
 
 // Statuses that count as "leave" for pattern detection / summaries.
 const LEAVE_STATUSES = new Set(["AL", "HD", "CL", "UL"]);
 const ABSENT_STATUSES = new Set(["A", "UL"]);
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-
-type CompLeave = {
-  earned: number;
-  used: number;
-  balance: number;
-  earningSaturdays: string[];
-};
 
 @Controller("api/attendance")
 export class AttendanceController {
@@ -310,6 +304,67 @@ export class AttendanceController {
     return { ...record, warning };
   }
 
+  // ---------------------------------------------------------------------------
+  // Bulk mark — saves a whole batch of edits (any interns, any days) in one
+  // request. An empty status clears the manual record for that day. All rows go
+  // through a single transaction so the grid never half-saves.
+  // ---------------------------------------------------------------------------
+  @Post("bulk")
+  async markBulk(
+    @Body()
+    body: {
+      records: { internId: string; date: string; status: string; notes?: string }[];
+    },
+  ) {
+    const records = body?.records ?? [];
+    if (records.length === 0) return { saved: 0, cleared: 0, warnings: [] };
+
+    const upserts = records.filter((r) => r.status);
+    const clears = records.filter((r) => !r.status);
+
+    // CL edits that would overdraw the comp-leave balance still save, but warn —
+    // same rule as the single-mark endpoint.
+    const warnings: string[] = [];
+    const clInternIds = [...new Set(upserts.filter((r) => r.status === "CL").map((r) => r.internId))];
+    if (clInternIds.length > 0) {
+      const [comp, interns] = await Promise.all([
+        this.computeCompLeave(clInternIds),
+        this.prisma.intern.findMany({
+          where: { id: { in: clInternIds } },
+          select: { id: true, name: true },
+        }),
+      ]);
+      const nameById = new Map(interns.map((i) => [i.id, i.name]));
+      for (const internId of clInternIds) {
+        const newCls = upserts.filter((r) => r.internId === internId && r.status === "CL").length;
+        const balance = comp.get(internId)?.balance ?? 0;
+        if (balance < newCls) {
+          warnings.push(
+            `${nameById.get(internId) ?? internId}: CL exceeds earned comp-leave balance (${balance}).`,
+          );
+        }
+      }
+    }
+
+    await this.prisma.$transaction([
+      ...upserts.map((r) => {
+        const date = new Date(`${r.date}T00:00:00Z`);
+        return this.prisma.attendance.upsert({
+          where: { internId_date: { internId: r.internId, date } },
+          update: { status: r.status as any, notes: r.notes },
+          create: { internId: r.internId, date, status: r.status as any, notes: r.notes },
+        });
+      }),
+      ...clears.map((r) =>
+        this.prisma.attendance.deleteMany({
+          where: { internId: r.internId, date: new Date(`${r.date}T00:00:00Z`) },
+        }),
+      ),
+    ]);
+
+    return { saved: upserts.length, cleared: clears.length, warnings };
+  }
+
   @Post("check-in")
   async checkIn(@Body() body: { internId: string }) {
     const now = new Date();
@@ -321,70 +376,9 @@ export class AttendanceController {
     });
   }
 
-  // ---------------------------------------------------------------------------
-  // Comp-leave engine — lifetime, accumulating (balance = earned − used).
-  //   earned = rostered Saturdays the intern was present (manual P, or a call-log
-  //            submission that day; a manual non-P status overrides derived P).
-  //   used   = attendance days marked CL (approved CL leaves also write CL here).
-  // ---------------------------------------------------------------------------
-  private async computeCompLeave(internIds?: string[]): Promise<Map<string, CompLeave>> {
-    const filter = internIds ? { internId: { in: internIds } } : {};
-    const rosters = await this.prisma.saturdayRoster.findMany({ where: filter });
-
-    const result = new Map<string, CompLeave>();
-    if (rosters.length === 0) return this.applyUsed(result, internIds);
-
-    const satDates = [...new Set(rosters.map((r) => r.date.getTime()))].map((t) => new Date(t));
-
-    const [manualOnSat, logsOnSat] = await Promise.all([
-      this.prisma.attendance.findMany({
-        where: { date: { in: satDates }, ...filter },
-        select: { internId: true, date: true, status: true },
-      }),
-      this.prisma.callLog.findMany({
-        where: { date: { in: satDates }, ...filter },
-        select: { internId: true, date: true },
-      }),
-    ]);
-
-    const manualSat = new Map<string, string>();
-    for (const r of manualOnSat) manualSat.set(this.key(r.internId, r.date), r.status);
-    const logSat = new Set<string>();
-    for (const l of logsOnSat) logSat.add(this.key(l.internId, l.date));
-
-    for (const r of rosters) {
-      const k = this.key(r.internId, r.date);
-      const manual = manualSat.get(k);
-      const present = manual ? manual === "P" : logSat.has(k);
-      const entry =
-        result.get(r.internId) ?? { earned: 0, used: 0, balance: 0, earningSaturdays: [] };
-      if (present) {
-        entry.earned++;
-        entry.earningSaturdays.push(r.date.toISOString().split("T")[0]);
-      }
-      result.set(r.internId, entry);
-    }
-
-    return this.applyUsed(result, internIds);
-  }
-
-  private async applyUsed(
-    result: Map<string, CompLeave>,
-    internIds?: string[],
-  ): Promise<Map<string, CompLeave>> {
-    const used = await this.prisma.attendance.groupBy({
-      by: ["internId"],
-      where: { status: "CL", ...(internIds ? { internId: { in: internIds } } : {}) },
-      _count: { _all: true },
-    });
-    for (const u of used) {
-      const entry =
-        result.get(u.internId) ?? { earned: 0, used: 0, balance: 0, earningSaturdays: [] };
-      entry.used = u._count._all;
-      result.set(u.internId, entry);
-    }
-    for (const entry of result.values()) entry.balance = entry.earned - entry.used;
-    return result;
+  // Comp-leave engine lives in ./comp-leave.util (shared with InternsController).
+  private computeCompLeave(internIds?: string[]): Promise<Map<string, CompLeave>> {
+    return computeCompLeave(this.prisma, internIds);
   }
 
   // date helpers -- everything keyed on the UTC calendar day (yyyy-mm-dd)
