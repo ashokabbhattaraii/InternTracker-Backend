@@ -5,11 +5,8 @@ generator client {
 }
 
 datasource db {
-  provider  = "postgresql"
-  // Runtime queries go through the Supabase transaction pooler (pgbouncer).
-  url       = env("DATABASE_URL")
-  // Migrations / introspection need a direct (session) connection.
-  directUrl = env("DIRECT_URL")
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 model Intern {
@@ -48,6 +45,7 @@ model Attendance {
   intern    Intern           @relation(fields: [internId], references: [id])
 
   @@unique([internId, date])
+  @@index([date])
 }
 
 model CallLog {
@@ -84,6 +82,7 @@ model CallLog {
 
   @@unique([internId, submittedAt])
   @@index([internId, date])
+  @@index([date])
 }
 
 model TourLog {
@@ -99,6 +98,7 @@ model TourLog {
   intern      Intern      @relation(fields: [internId], references: [id])
 
   @@index([internId, date])
+  @@index([date])
 }
 
 model LeaveRequest {
@@ -117,6 +117,7 @@ model LeaveRequest {
   intern    Intern      @relation(fields: [internId], references: [id])
 
   @@index([internId])
+  @@index([status])
 }
 
 model ImportBatch {
