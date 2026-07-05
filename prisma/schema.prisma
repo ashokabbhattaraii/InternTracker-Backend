@@ -158,6 +158,17 @@ model KpiTarget {
   updatedAt         DateTime @updatedAt
 }
 
+model ScheduledImport {
+  id        String   @id @default(cuid())
+  url       String
+  time      String   @default("18:30")
+  enabled   Boolean  @default(true)
+  lastRunAt DateTime?
+  lastError String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
 enum Role {
   INTERN
   SUPERVISOR

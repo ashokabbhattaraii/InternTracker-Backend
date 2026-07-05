@@ -8,6 +8,7 @@ import { LeavesModule } from "./leaves/leaves.module";
 import { DashboardModule } from "./dashboard/dashboard.module";
 import { ImportModule } from "./import/import.module";
 import { PerformanceModule } from "./performance/performance.module";
+import { SchedulerModule } from "./scheduler/scheduler.module";
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { PerformanceModule } from "./performance/performance.module";
     DashboardModule,
     ImportModule,
     PerformanceModule,
+    SchedulerModule,
   ],
 })
 export class AppModule {}
