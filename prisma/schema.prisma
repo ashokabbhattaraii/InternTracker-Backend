@@ -1,5 +1,8 @@
 generator client {
   provider      = "prisma-client-js"
+  // Emit the client into the project tree so pnpm's symlinked store doesn't
+  // hide the generated types from Vercel's @vercel/node TypeScript compiler.
+  output        = "../generated/prisma"
   // "native" for local dev; "rhel-openssl-3.0.x" for the Vercel Function runtime.
   binaryTargets = ["native", "rhel-openssl-3.0.x"]
 }
