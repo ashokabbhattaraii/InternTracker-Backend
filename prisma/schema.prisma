@@ -154,14 +154,20 @@ model SaturdayRoster {
 }
 
 model KpiTarget {
-  id                String   @id @default(cuid())
-  minCallsPerDay    Int      @default(15)
-  minVisitsPerWeek  Int      @default(10)
-  minToursPerMonth  Int      @default(5)
-  minAttendanceRate Int      @default(85)
-  lateThresholdMin  Int      @default(15)
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  id                  String   @id @default(cuid())
+  minCallsPerDay      Int      @default(15)
+  minVisitsPerWeek    Int      @default(10)
+  minToursPerMonth    Int      @default(5)
+  minAttendanceRate   Int      @default(85)
+  lateThresholdMin    Int      @default(15)
+  sessionTimeoutMin   Int      @default(30)
+  notifyLate          Boolean  @default(true)
+  notifyAbsent        Boolean  @default(true)
+  notifyPattern       Boolean  @default(true)
+  notifyKpi           Boolean  @default(false)
+  notifyPending       Boolean  @default(true)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 }
 
 model ScheduledImport {

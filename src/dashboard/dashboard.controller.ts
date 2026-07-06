@@ -143,6 +143,11 @@ export class DashboardController {
       select: { id: true, internId: true, name: true, team: true, joinDate: true },
     });
 
+    const kpiRow = await this.prisma.kpiTarget.findFirst();
+    const minAttendanceRate = kpiRow?.minAttendanceRate ?? 85;
+    const criticalThreshold = Math.max(minAttendanceRate - 35, 20);
+    const warningThreshold = minAttendanceRate;
+
     const [manual, callLogs, rosters, callFirst, attFirst] = await Promise.all([
       this.prisma.attendance.findMany({
         where: { date: { gte: startDate, lte: endDate } },
@@ -245,11 +250,11 @@ export class DashboardController {
       const reasons: string[] = [];
       let severity: "critical" | "warning" | "info" | null = null;
 
-      if (expectedDays >= 3 && attendanceRate < 50) {
-        reasons.push(`Only ${attendanceRate}% attendance (${Math.round(presentCredit)}/${expectedDays} days)`);
+      if (expectedDays >= 3 && attendanceRate < criticalThreshold) {
+        reasons.push(`Only ${attendanceRate}% attendance (${Math.round(presentCredit)}/${expectedDays} days) — target: ${minAttendanceRate}%`);
         severity = "critical";
-      } else if (expectedDays >= 3 && attendanceRate < 70) {
-        reasons.push(`Low attendance: ${attendanceRate}% (${Math.round(presentCredit)}/${expectedDays} days)`);
+      } else if (expectedDays >= 3 && attendanceRate < warningThreshold) {
+        reasons.push(`Low attendance: ${attendanceRate}% (${Math.round(presentCredit)}/${expectedDays} days) — target: ${minAttendanceRate}%`);
         severity = severity ?? "warning";
       }
 
@@ -305,6 +310,7 @@ export class DashboardController {
       totalAlerts: alerts.length,
       critical: alerts.filter((a) => a.severity === "critical").length,
       warning: alerts.filter((a) => a.severity === "warning").length,
+      targets: { minAttendanceRate },
       alerts,
     };
   }

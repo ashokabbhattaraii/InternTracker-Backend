@@ -9,6 +9,7 @@ import { DashboardModule } from "./dashboard/dashboard.module";
 import { ImportModule } from "./import/import.module";
 import { PerformanceModule } from "./performance/performance.module";
 import { SchedulerModule } from "./scheduler/scheduler.module";
+import { SettingsModule } from "./settings/settings.module";
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { SchedulerModule } from "./scheduler/scheduler.module";
     ImportModule,
     PerformanceModule,
     SchedulerModule,
+    SettingsModule,
   ],
 })
 export class AppModule {}

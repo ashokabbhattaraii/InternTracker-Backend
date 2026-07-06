@@ -1,0 +1,7 @@
+-- AlterTable
+ALTER TABLE "KpiTarget" ADD COLUMN     "notifyAbsent" BOOLEAN NOT NULL DEFAULT true,
+ADD COLUMN     "notifyKpi" BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN     "notifyLate" BOOLEAN NOT NULL DEFAULT true,
+ADD COLUMN     "notifyPattern" BOOLEAN NOT NULL DEFAULT true,
+ADD COLUMN     "notifyPending" BOOLEAN NOT NULL DEFAULT true,
+ADD COLUMN     "sessionTimeoutMin" INTEGER NOT NULL DEFAULT 30;

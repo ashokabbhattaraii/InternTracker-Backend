@@ -258,13 +258,17 @@ export class AttendanceController {
     const attendanceRate = expectedDays > 0 ? Math.round((presentCredit / expectedDays) * 100) : 0;
     const cl = comp.get(id) ?? { earned: 0, used: 0, balance: 0, earningSaturdays: [] };
 
+    const kpiRow = await this.prisma.kpiTarget.findFirst();
+    const minAttendanceRate = kpiRow?.minAttendanceRate ?? 85;
+    const criticalThreshold = Math.max(minAttendanceRate - 35, 20);
+
     // Comprehensive flag detection
     const flags: string[] = [];
 
-    if (expectedDays > 0 && attendanceRate < 50) {
-      flags.push(`Critical: Only ${attendanceRate}% attendance (${Math.round(presentCredit)}/${expectedDays} days)`);
-    } else if (expectedDays > 0 && attendanceRate < 70) {
-      flags.push(`Low attendance: ${attendanceRate}% (${Math.round(presentCredit)}/${expectedDays} days)`);
+    if (expectedDays > 0 && attendanceRate < criticalThreshold) {
+      flags.push(`Critical: Only ${attendanceRate}% attendance (${Math.round(presentCredit)}/${expectedDays} days) — target: ${minAttendanceRate}%`);
+    } else if (expectedDays > 0 && attendanceRate < minAttendanceRate) {
+      flags.push(`Low attendance: ${attendanceRate}% (${Math.round(presentCredit)}/${expectedDays} days) — target: ${minAttendanceRate}%`);
     }
 
     if (maxConsecutiveAbsent >= 3) {
