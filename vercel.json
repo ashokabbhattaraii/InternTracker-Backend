@@ -7,7 +7,7 @@
       "config": {
         "includeFiles": [
           "prisma/**",
-          "generated/prisma/**"
+          "src/generated/prisma/**"
         ]
       }
     }

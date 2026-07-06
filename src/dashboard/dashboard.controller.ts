@@ -73,9 +73,10 @@ export class DashboardController {
     const checkedInIds = new Set(todayAttendance.map((a) => a.internId));
     const notCheckedIn = allInterns.filter((i) => !checkedInIds.has(i.id));
 
-    const leaderboard = new Map<string, { name: string; internId: string; team: string; totalCalls: number; totalTours: number; interested: number }>();
+    const leaderboard = new Map<string, { id: string; name: string; internId: string; team: string; totalCalls: number; totalTours: number; interested: number }>();
     monthCallLogs.forEach((log) => {
       const existing = leaderboard.get(log.internId) || {
+        id: log.internId,
         name: log.intern.name,
         internId: log.intern.internId,
         team: log.intern.team,
@@ -108,11 +109,12 @@ export class DashboardController {
       ccCallsToday,
       pendingLeaves: pendingLeaves.length,
       pendingLeavesList: pendingLeaves,
-      notCheckedIn: notCheckedIn.map((i) => ({ name: i.name, team: i.team })),
+      notCheckedIn: notCheckedIn.map((i) => ({ id: i.id, name: i.name, team: i.team })),
       leaderboard: allLeaderboard.slice(0, 10),
       alphaLeaderboard: allLeaderboard.filter((l) => l.team === "ALPHA").slice(0, 5),
       ccLeaderboard: allLeaderboard.filter((l) => l.team === "CALL_CENTER" || l.team === "EA").slice(0, 5),
       todayCalls: todayCalls.map((l) => ({
+        id: l.internId,
         name: l.intern.name,
         team: l.intern.team,
         callsMade: l.callsMade,

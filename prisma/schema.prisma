@@ -1,8 +1,10 @@
 generator client {
   provider      = "prisma-client-js"
-  // Emit the client into the project tree so pnpm's symlinked store doesn't
-  // hide the generated types from Vercel's @vercel/node TypeScript compiler.
-  output        = "../generated/prisma"
+  // Emit the client into the source tree so pnpm's symlinked store doesn't
+  // hide the generated types from Vercel's @vercel/node TypeScript compiler,
+  // and so it sits at the same relative depth in both `src` and the compiled
+  // `dist/src` output (Nest copies it into dist via the nest-cli assets entry).
+  output        = "../src/generated/prisma"
   // "native" for local dev; "rhel-openssl-3.0.x" for the Vercel Function runtime.
   binaryTargets = ["native", "rhel-openssl-3.0.x"]
 }

@@ -1,3 +1,7 @@
+// Load .env before anything else so PrismaService sees DATABASE_URL when Nest
+// instantiates it. On Vercel the entry is api/index.ts and env vars are
+// injected by the platform, so this local-dev bootstrap owns dotenv loading.
+import "dotenv/config";
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module";
 import { json, urlencoded } from "express";
