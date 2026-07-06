@@ -192,6 +192,12 @@ export class AttendanceController {
       this.computeCompLeave([id]),
     ]);
 
+    const rosters = await this.prisma.saturdayRoster.findMany({
+      where: { internId: id, date: { gte: startDate, lte: endDate } },
+      select: { date: true },
+    });
+    const rosterDates = new Set(rosters.map((r) => r.date.toISOString().split("T")[0]));
+
     const manualMap = new Map<string, string>();
     for (const r of manual) manualMap.set(r.date.toISOString().split("T")[0], r.status);
     const logSet = new Set(callLogs.map((l) => l.date.toISOString().split("T")[0]));
@@ -200,35 +206,103 @@ export class AttendanceController {
     const absencesByWeekday = new Map<number, number>();
     let leaveCount = 0;
     let unapprovedCount = 0;
+    let presentCredit = 0;
+    let expectedDays = 0;
+    let consecutiveAbsent = 0;
+    let maxConsecutiveAbsent = 0;
+    let friMonAbsences = 0;
+    let totalAbsent = 0;
+
+    const todayStr = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+    ).toISOString().split("T")[0];
 
     for (let d = 1; d <= endDate.getUTCDate(); d++) {
       const dateStr = this.ds(y, m, d);
       const status = manualMap.get(dateStr) ?? (logSet.has(dateStr) ? "P" : undefined);
-      if (!status) continue;
-      breakdown[status] = (breakdown[status] || 0) + 1;
-      if (LEAVE_STATUSES.has(status)) leaveCount++;
-      if (status === "UL") unapprovedCount++;
-      if (ABSENT_STATUSES.has(status)) {
-        const wd = new Date(`${dateStr}T00:00:00Z`).getUTCDay();
-        absencesByWeekday.set(wd, (absencesByWeekday.get(wd) || 0) + 1);
+
+      if (status) {
+        breakdown[status] = (breakdown[status] || 0) + 1;
+        if (LEAVE_STATUSES.has(status)) leaveCount++;
+        if (status === "UL") unapprovedCount++;
+        if (ABSENT_STATUSES.has(status)) {
+          const wd = new Date(`${dateStr}T00:00:00Z`).getUTCDay();
+          absencesByWeekday.set(wd, (absencesByWeekday.get(wd) || 0) + 1);
+          if (wd === 5 || wd === 1) friMonAbsences++;
+        }
+      }
+
+      // Attendance rate calculation (same logic as getGrid)
+      if (dateStr > todayStr) continue;
+      const dow = new Date(`${dateStr}T00:00:00Z`).getUTCDay();
+      const isWorkingDay = dow !== 6 || rosterDates.has(dateStr);
+      if (!isWorkingDay) continue;
+      if (status === "ND") continue;
+      if (status === "AL" || status === "CL") continue;
+
+      expectedDays++;
+      if (status === "P" || status === "L") {
+        presentCredit += 1;
+        consecutiveAbsent = 0;
+      } else if (status === "HD") {
+        presentCredit += 0.5;
+        consecutiveAbsent = 0;
+      } else {
+        // Absent or no record
+        totalAbsent++;
+        consecutiveAbsent++;
+        maxConsecutiveAbsent = Math.max(maxConsecutiveAbsent, consecutiveAbsent);
       }
     }
 
+    const attendanceRate = expectedDays > 0 ? Math.round((presentCredit / expectedDays) * 100) : 0;
     const cl = comp.get(id) ?? { earned: 0, used: 0, balance: 0, earningSaturdays: [] };
 
+    // Comprehensive flag detection
     const flags: string[] = [];
+
+    if (expectedDays > 0 && attendanceRate < 50) {
+      flags.push(`Critical: Only ${attendanceRate}% attendance (${Math.round(presentCredit)}/${expectedDays} days)`);
+    } else if (expectedDays > 0 && attendanceRate < 70) {
+      flags.push(`Low attendance: ${attendanceRate}% (${Math.round(presentCredit)}/${expectedDays} days)`);
+    }
+
+    if (maxConsecutiveAbsent >= 3) {
+      flags.push(`${maxConsecutiveAbsent} consecutive absent days (possible abandonment)`);
+    } else if (maxConsecutiveAbsent >= 2) {
+      flags.push(`${maxConsecutiveAbsent} consecutive absent days`);
+    }
+
+    if (totalAbsent > 0 && expectedDays > 0 && totalAbsent >= expectedDays * 0.5) {
+      flags.push(`Absent more than half the working days (${totalAbsent}/${expectedDays})`);
+    }
+
+    if (friMonAbsences >= 2) {
+      flags.push(`Friday/Monday absence pattern detected (${friMonAbsences}×) — possible weekend extension`);
+    }
+
     for (const [wd, c] of absencesByWeekday) {
       if (c >= 2) flags.push(`Repeated absence on ${WEEKDAYS[wd]} (${c}×)`);
     }
+
     if (leaveCount >= 3) flags.push(`${leaveCount} leaves this month`);
-    if (unapprovedCount > 1) flags.push(`Unapproved leave ${unapprovedCount}× this month`);
+    if (unapprovedCount > 1) flags.push(`${unapprovedCount} unapproved leaves this month`);
     if (cl.used > cl.earned) flags.push(`Comp leave overspent (used ${cl.used} / earned ${cl.earned})`);
+
+    if (expectedDays >= 5 && presentCredit === 0) {
+      flags.push(`No attendance recorded for ${expectedDays} working days — inactive/ghost intern`);
+    }
 
     return {
       intern: { id: intern.id, internId: intern.internId, name: intern.name, team: intern.team },
       month: m + 1,
       year: y,
       breakdown,
+      attendanceRate,
+      expectedDays,
+      presentDays: Math.round(presentCredit),
+      absentDays: totalAbsent,
+      maxConsecutiveAbsent,
       compLeave: {
         earned: cl.earned,
         used: cl.used,
